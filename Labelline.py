@@ -32,13 +32,14 @@ class MainWindow(QMainWindow):
         self.capture_endpoint = None
 
         self.save_flag = True
+        # self.label_flag == True means we are in "Create Mode"
         self.label_flag = False
 
         # Delete mode
         self.delete_mode = False
         self.selected_lines = set()  # set of indices of lines selected for deletion
 
-        # New: for endpoint dragging
+        # Endpoint dragging
         self.is_dragging = False
         self.dragging_line_index = -1
         self.dragging_endpoint_index = -1
@@ -55,14 +56,11 @@ class MainWindow(QMainWindow):
         self.line_width = cfg.line_width
         self.point_radius = cfg.point_radius
 
-        # If endpoint_select_thresh is not defined, default to 3x the radius
         if hasattr(cfg, "endpoint_select_thresh"):
             self.endpoint_select_thresh = cfg.endpoint_select_thresh
         else:
             self.endpoint_select_thresh = 3 * self.point_radius
 
-        # For backward-compat, we still read point_select_thresh for snapping.
-        # But if you want them the same, just unify them.
         self.point_select_thresh = (
             2 * self.point_radius if cfg.point_select_thresh is None else cfg.point_select_thresh
         )
@@ -225,6 +223,9 @@ class MainWindow(QMainWindow):
         self.label_Image.setEnabled(False)
 
     def image_update(self):
+        if self.image is None:
+            return
+
         image = self.image.copy()
         if len(self.lines) > 0:
             try:
@@ -233,16 +234,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 lines = self.lines
 
-            # Draw all lines in green
             self.camera.insert_line(image, lines, color=[0, 255, 0], thickness=self.line_width)
 
-            # Draw all endpoints in red
             pts = self.lines.reshape(-1, 2)
             for pt in pts:
                 pt = np.int32(np.round(pt))
                 cv2.circle(image, tuple(pt), radius=self.point_radius, color=[0, 0, 255], thickness=-1)
 
-            # The currently "active" line is drawn in blue
+            # Active line in blue
             if self.line_index >= 0 and self.label_endpoint is None:
                 try:
                     single_line = self.camera.truncate_line(
@@ -252,7 +251,7 @@ class MainWindow(QMainWindow):
                     single_line = self.lines[self.line_index : self.line_index + 1]
                 self.camera.insert_line(image, single_line, color=[255, 0, 0], thickness=self.line_width)
 
-            # Highlight lines that are selected for deletion (in magenta)
+            # Lines selected for deletion in magenta
             for idx in self.selected_lines:
                 try:
                     selected_line = self.camera.truncate_line(self.lines[idx : idx + 1])
@@ -260,12 +259,11 @@ class MainWindow(QMainWindow):
                     selected_line = self.lines[idx : idx + 1]
                 self.camera.insert_line(image, selected_line, color=[255, 0, 255], thickness=self.line_width)
 
-        # If we're in the middle of creating a line, draw its endpoint in blue
+        # If we're in the middle of defining a line
         if self.label_endpoint is not None:
             pt = np.int32(np.round(self.label_endpoint))
             cv2.circle(image, tuple(pt), radius=self.point_radius, color=[255, 0, 0], thickness=-1)
 
-        # If there's a "capture endpoint" for snapping, draw it in pink
         if self.capture_endpoint is not None:
             pt = np.int32(np.round(self.capture_endpoint))
             cv2.circle(image, tuple(pt), radius=self.point_select_thresh, color=[255, 0, 255], thickness=-1)
@@ -307,7 +305,6 @@ class MainWindow(QMainWindow):
                 exit()
 
     def data_update(self):
-        self.label_flag = False
         self.label_endpoint = None
         self.capture_endpoint = None
         self.selected_lines.clear()
@@ -327,6 +324,7 @@ class MainWindow(QMainWindow):
             lines = sio.loadmat(line_file)['lines']
             if len(lines):
                 self.lines = lines
+
         self.line_index = len(self.lines) - 1
         self.set_camera()
 
@@ -360,13 +358,11 @@ class MainWindow(QMainWindow):
         self.text_Line.setText(f'Line list: {self.line_index + 1} / {len(self.lines)}')
         self.list_Line.clear()
 
-        # Rebuild the list items
         for i, line in enumerate(self.lines.reshape(-1, 4)):
             item_text = f'[{line[0]:.3f}, {line[1]:.3f}, {line[2]:.3f}, {line[3]:.3f}]'
             item = QListWidgetItem(item_text)
-            self.list_Line.addItem(item)
-            # Optionally store the line index in item data
             item.setData(Qt.UserRole, i)
+            self.list_Line.addItem(item)
 
         if self.line_index >= 0:
             self.list_Line.setCurrentRow(self.line_index)
@@ -384,8 +380,11 @@ class MainWindow(QMainWindow):
         self.Save_Callback()
         if not data_path:
             data_path = QFileDialog.getExistingDirectory()
+        if not data_path:
+            return
+
         image_path = os.path.join(data_path, self.image_folder)
-        if data_path == '' or not os.path.isdir(image_path):
+        if not os.path.isdir(image_path):
             return
 
         file_list = []
@@ -420,11 +419,15 @@ class MainWindow(QMainWindow):
         if self.save_flag:
             return
         self.save_flag = True
+        if self.file_index < 0 or self.file_index >= len(self.file_list):
+            return
+
         image_file = self.file_list[self.file_index]
         filename = os.path.basename(image_file)
         filename = os.path.splitext(filename)[0] + '.mat'
         line_file = os.path.join(self.data_path, self.label_folder, filename)
-        if self.camera.coeff:
+
+        if self.camera and self.camera.coeff:
             K, D = self.camera.coeff['K'], self.camera.coeff['D']
             sio.savemat(line_file, {'lines': self.lines, 'K': K, 'D': D})
         else:
@@ -454,7 +457,6 @@ class MainWindow(QMainWindow):
         self.image_update()
 
     def ListLine_Callback(self):
-        # If multiple lines are selected, line_index will refer to the last clicked
         selected_items = self.list_Line.selectedItems()
         if not selected_items:
             return
@@ -468,17 +470,22 @@ class MainWindow(QMainWindow):
         self.image_update()
 
     def Create_Callback(self):
-        self.label_flag = True
-        self.setCursor(Qt.CrossCursor)
-        self.reset()
-        self.label_Image.setEnabled(True)
+        """
+        Toggle creation mode. If off -> on, set the cursor to crosshair so user
+        can create lines by left-clicking twice. If on -> off, restore arrow cursor.
+        """
+        self.label_flag = not self.label_flag
+
+        if self.label_flag:
+            self.statusBar().showMessage("Create Mode ON: Click two points for each line.")
+            self.button_Create.setText("Create: ON")
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.statusBar().clearMessage()
+            self.button_Create.setText("Create")
+            self.setCursor(Qt.ArrowCursor)
 
     def Delete_Callback(self):
-        """
-        If in delete_mode, remove all lines that are selected in the UI or 
-        selected_lines in the image. Otherwise, remove the single line at line_index.
-        """
-        # Collect all selected lines from the list
         selected_items = self.list_Line.selectedItems()
         selected_from_list = set()
         for it in selected_items:
@@ -486,11 +493,9 @@ class MainWindow(QMainWindow):
             if idx is not None:
                 selected_from_list.add(idx)
 
-        # Combine with selected lines from the image
         lines_to_delete = selected_from_list.union(self.selected_lines)
 
         if len(lines_to_delete) == 0 and not self.delete_mode:
-            # Fallback: old behavior (delete the line_index)
             if self.line_index < 0 or self.line_index >= len(self.lines):
                 return
             lines_to_delete = {self.line_index}
@@ -508,7 +513,6 @@ class MainWindow(QMainWindow):
         self.image_update()
 
     def ToggleDeleteMode_Callback(self):
-        """Toggle the delete mode on/off."""
         self.delete_mode = not self.delete_mode
         if self.delete_mode:
             self.statusBar().showMessage("Delete Mode ON - click lines to select/unselect them")
@@ -544,9 +548,7 @@ class MainWindow(QMainWindow):
         self.image_update()
 
     ###
-    # Updated mouse event overrides for endpoint dragging:
-    # We attempt to find the nearest line endpoint among ALL lines, then we
-    # automatically select that line (line_index) if found.
+    # Mouse events for endpoint dragging and line creation
     ###
     def mousePress_Callback(self, event):
         if event.button() == Qt.LeftButton:
@@ -554,12 +556,11 @@ class MainWindow(QMainWindow):
             if x < 0 or y < 0:
                 return
 
-            # If user is NOT creating or deleting lines, let's see if they're near any endpoint
+            # If not in create mode and not in delete mode, check for endpoint dragging
             if not self.label_flag and not self.delete_mode and len(self.lines) > 0:
                 best_dist = float('inf')
                 best_line = -1
                 best_endpoint = -1
-                # Check all lines for the closest endpoint
                 for i, line in enumerate(self.lines):
                     for ep_idx in range(2):
                         dist = np.linalg.norm(line[ep_idx] - [x, y])
@@ -567,9 +568,8 @@ class MainWindow(QMainWindow):
                             best_dist = dist
                             best_line = i
                             best_endpoint = ep_idx
-                # If the best line is within self.endpoint_select_thresh, drag it
+
                 if best_dist <= self.endpoint_select_thresh:
-                    # Automatically select that line
                     self.line_index = best_line
                     self.line_update()
                     self.image_update()
@@ -579,11 +579,10 @@ class MainWindow(QMainWindow):
                     self.dragging_endpoint_index = best_endpoint
                     return
 
-        # If not handled above, pass on to the default logic
         super().mousePressEvent(event)
 
     def mouseRelease_Callback(self, event):
-        # If we were dragging an endpoint, finalize that
+        # If we were dragging an endpoint
         if self.is_dragging and event.button() == Qt.LeftButton:
             self.is_dragging = False
             self.dragging_line_index = -1
@@ -592,35 +591,26 @@ class MainWindow(QMainWindow):
             self.image_update()
             return
 
-        # Otherwise, do the old logic
+        # Otherwise, old logic
         if event.button() == Qt.RightButton:
-            if self.button_Create.isEnabled():
-                self.Create_Callback()
-            else:
-                self.label_flag = False
-                self.label_endpoint = None
-                self.capture_endpoint = None
-                self.setCursor(Qt.ArrowCursor)
-                self.widget_update()
-                self.line_update()
-                self.zoom_update()
-                self.image_update()
+            # If create mode is on, we do not forcibly turn it off.
+            # Right-click remains: "Quickly start a new line"? 
+            # We can remove or keep that logic. For now, let's just remove the auto-callback:
+            pass
         elif event.button() == Qt.LeftButton:
             self._handleLeftReleaseForCreatingOrSelecting(event)
-        # Could handle middle button, etc.
 
     def mouseMove_Callback(self, event):
         if self.is_dragging:
-            # If dragging an endpoint, continuously update that endpoint
+            # Dragging endpoint
             x, y = self._mapToImageCoords(event)
             if x < 0 or y < 0:
                 return
             if 0 <= self.dragging_line_index < len(self.lines):
                 self.lines[self.dragging_line_index][self.dragging_endpoint_index] = [x, y]
                 self.image_update()
-            return
         else:
-            # Not dragging; do old logic for capture_endpoint if in create mode
+            # If in create mode, check for snapping
             last_capture_endpoint = self.capture_endpoint
             self.capture_endpoint = None
             if self.label_flag and len(self.lines) > 0:
@@ -635,24 +625,19 @@ class MainWindow(QMainWindow):
                         index = dists.argmin()
                         self.capture_endpoint = pts[index]
 
-            # Update UI if capture endpoint changed
             if last_capture_endpoint is not None or self.capture_endpoint is not None:
                 self.image_update()
 
     def _handleLeftReleaseForCreatingOrSelecting(self, event):
-        width, height = self.image.shape[1], self.image.shape[0]
         x, y = self._mapToImageCoords(event)
-        if x < 0 or x >= width or y < 0 or y >= height:
+        if x < 0 or y < 0:
             return
-
         pt = np.array([x, y], np.float32)
 
-        if self.delete_mode:
-            # In delete mode, left-click toggles selection of the nearest line
-            if len(self.lines) == 0:
-                return
-            dists = []
+        # If delete mode is on, toggle line selection
+        if self.delete_mode and len(self.lines) > 0:
             pts_list = self.camera.interp_line(self.lines)
+            dists = []
             for i, pts_ in enumerate(pts_list):
                 dist = np.linalg.norm(pts_ - pt[None], axis=-1).min()
                 dists.append(dist)
@@ -667,9 +652,10 @@ class MainWindow(QMainWindow):
             self.image_update()
             return
 
+        # If create mode is on, consume the click to define a new line
         if self.label_flag:
-            # Creating a new line
             if self.label_endpoint is None:
+                # First endpoint
                 if self.capture_endpoint is not None:
                     self.label_endpoint = self.capture_endpoint
                     self.capture_endpoint = None
@@ -677,11 +663,11 @@ class MainWindow(QMainWindow):
                     self.label_endpoint = pt
                 self.image_update()
             else:
+                # Second endpoint => finalize line
                 if abs(self.label_endpoint[0] - pt[0]) <= self.point_align_thresh:
                     pt[0] = self.label_endpoint[0]
                 if abs(self.label_endpoint[1] - pt[1]) <= self.point_align_thresh:
                     pt[1] = self.label_endpoint[1]
-                self.label_flag = False
                 if self.capture_endpoint is not None:
                     pt = self.capture_endpoint
                     self.capture_endpoint = None
@@ -690,18 +676,20 @@ class MainWindow(QMainWindow):
                 self.lines = np.concatenate((self.lines, line[None]))
                 self.line_index = len(self.lines) - 1
 
+                # Keep label_flag = True so user can continue making lines
+                self.label_endpoint = None
                 self.save_flag = False
-                self.setCursor(Qt.ArrowCursor)
+
                 self.widget_update()
                 self.line_update()
                 self.zoom_update()
                 self.image_update()
         else:
-            # Not in create mode or delete mode => pick line to highlight
+            # If neither create nor delete mode, highlight a line
             if len(self.lines) == 0:
                 return
-            dists = []
             pts_list = self.camera.interp_line(self.lines)
+            dists = []
             for pts_ in pts_list:
                 dist = np.linalg.norm(pts_ - pt[None], axis=-1).min()
                 dists.append(dist)
@@ -715,10 +703,8 @@ class MainWindow(QMainWindow):
             self.image_update()
 
     def _mapToImageCoords(self, event):
-        """
-        Utility: given a mouse event, return (x, y) in the image's coordinate space.
-        Returns (-1, -1) if out of bounds.
-        """
+        if self.image is None:
+            return -1, -1
         width, height = self.image.shape[1], self.image.shape[0]
         image_width = int(round(width * self.scale))
         image_height = int(round(height * self.scale))
@@ -742,29 +728,32 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             'Tutorial',
-            'Version: 3.1\n'
+            'Version: 3.2\n'
             'Author: lh9171338 + ChatGPT\n'
             'Date: 2022-02-20\n'
+            'New: Create Mode is toggled, so you can create multiple lines.\n'
+            '\n'
             'Features:\n'
-            '- Create lines by left-clicking twice in the image (Ctrl + C)\n'
+            '- Toggle Create Mode with the Create button or Ctrl+C.\n'
+            '- In Create Mode, every two left-clicks makes a line.\n'
             '- Delete multiple lines (Delete Mode, Ctrl+Shift+D)\n'
             '- Drag endpoints of any line to move them (no need to select first)\n'
-            '- Larger endpoint selection threshold (configurable)\n'
-            '\n'
-            'Shortcut (default):\n'
-            '\tCtrl + O: Select an image folder\n'
-            '\tCtrl + S: Save the annotations\n'
-            '\tCtrl + V: Go to the next image\n'
-            '\tCtrl + B: Go to the previous image\n'
-            '\tCtrl + C: Create a new annotation\n'
-            '\tCtrl + D: Delete the selected annotation\n'
-            '\tCtrl + Shift + D: Toggle delete mode\n'
-            '\tCtrl + U: View the tutorial\n'
             '\n'
             'Mouse usage:\n'
-            '\tLeft-click: Create endpoints if in create mode, toggle line selection in delete mode,\n'
-            '\t            or drag endpoints if near them.\n'
-            '\tRight-click: Quickly start a new line (if create is enabled).',
+            '\tLeft-click:\n'
+            '\t- If in Create Mode: pick endpoints of new line\n'
+            '\t- If in Delete Mode: toggle line selection\n'
+            '\t- Otherwise: drag endpoints or select lines\n'
+            '\n'
+            'Shortcut (default):\n'
+            '\tCtrl + O: Open image folder\n'
+            '\tCtrl + S: Save annotations\n'
+            '\tCtrl + B: Prev image\n'
+            '\tCtrl + V: Next image\n'
+            '\tCtrl + C: Toggle Create Mode\n'
+            '\tCtrl + D: Delete selected annotation\n'
+            '\tCtrl + Shift + D: Toggle Delete Mode\n'
+            '\tCtrl + U: Tutorial\n',
             QMessageBox.Close,
         )
 
